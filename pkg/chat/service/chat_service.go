@@ -234,7 +234,19 @@ func (c *chatService) HistorySyncRequest(data *HistorySyncRequestStruct, instanc
 
 	histRequest := client.BuildHistorySyncRequest(&messageInfo, data.Count)
 
-	res, err := client.SendMessage(context.Background(), messageInfo.Chat, histRequest, whatsmeow.SendRequestExtra{Peer: true})
+	// The history sync request must go to the user's OWN primary device, which is what holds the
+	// history and serves it back. It was being sent to messageInfo.Chat (the contact), so it
+	// failed before ever reaching WhatsApp:
+	//
+	//   failed to encrypt peer message for <contact>: can't encrypt message for device:
+	//   no signal session established with <lid>
+	//
+	// whatsmeow already exposes the correct helper. From its own docs on BuildHistorySyncRequest:
+	// "builds a message to request additional history from the user's primary device. The built
+	// message can be sent using Client.SendPeerMessage." SendPeerMessage resolves the own JID
+	// (getOwnID().ToNonAD()) and returns ErrNotLoggedIn if the session is gone, which the manual
+	// SendMessage call did not handle either.
+	res, err := client.SendPeerMessage(context.Background(), histRequest)
 	if err != nil {
 		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error history sync request: %v", instance.Id, err)
 		return nil, err
