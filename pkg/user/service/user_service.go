@@ -53,6 +53,11 @@ type UserInfo struct {
 	PictureID    string
 	Devices      []types.JID
 	LID          *string // The local ID (if available)
+	// PN is the phone number behind a LID. WhatsApp increasingly delivers new chats identified
+	// only by their LID, and callers had no way to get the real number: asking for a LID used to
+	// return nothing, because only the phone -> LID direction was looked up. whatsmeow keeps both
+	// directions in its LID store (it needs them to route), so we expose the one that was missing.
+	PN *string `json:",omitempty"`
 }
 
 type UserCollection struct {
@@ -170,12 +175,19 @@ func (u *userService) GetUser(data *CheckUserStruct, instance *instance_model.In
 	uc.Users = make(map[types.JID]UserInfo)
 
 	for jid, whatsmeowInfo := range resp {
-		// Consultar LID Store para obter LID associado ao JID
+		// GetAltJID resolves BOTH ways: phone -> LID and LID -> phone. Using GetLIDForPN directly
+		// only answered the first one, so a chat that arrived identified just by its LID could
+		// never be matched back to a real phone number.
 		var lidStr *string
+		var pnStr *string
 		if client.Store.LIDs != nil {
-			if lid, err := client.Store.LIDs.GetLIDForPN(context.TODO(), jid); err == nil && !lid.IsEmpty() {
-				lidString := fmt.Sprintf("%v", lid)
-				lidStr = &lidString
+			if alt, err := client.Store.GetAltJID(context.TODO(), jid); err == nil && !alt.IsEmpty() {
+				altString := fmt.Sprintf("%v", alt)
+				if jid.Server == types.HiddenUserServer {
+					pnStr = &altString
+				} else {
+					lidStr = &altString
+				}
 			}
 		}
 
@@ -186,6 +198,7 @@ func (u *userService) GetUser(data *CheckUserStruct, instance *instance_model.In
 			PictureID:    whatsmeowInfo.PictureID,
 			Devices:      whatsmeowInfo.Devices,
 			LID:          lidStr,
+			PN:           pnStr,
 		}
 		uc.Users[jid] = info
 	}
