@@ -23,6 +23,7 @@ type websocketProducer struct {
 	clients       map[string]*websocket.Conn // conexões específicas por instância
 	broadcast     []*websocket.Conn          // conexões que recebem todos os eventos
 	clientsMux    sync.RWMutex
+	writeMux      sync.Mutex // serializa as escritas no WebSocket (gorilla não permite writes concorrentes)
 	loggerWrapper *logger_wrapper.LoggerManager
 }
 
@@ -108,24 +109,29 @@ func (p *websocketProducer) Produce(queueName string, payload []byte, instanceID
 		"payload": string(payload),
 	}
 
+	// Tomamos as referências sob RLock e o liberamos ANTES de escrever na rede,
+	// para não bloquear Add/Remove durante o I/O.
 	p.clientsMux.RLock()
-	defer p.clientsMux.RUnlock()
+	client, exists := p.clients[instanceID]
+	broadcast := append([]*websocket.Conn(nil), p.broadcast...)
+	p.clientsMux.RUnlock()
+
+	// Um único escritor por vez: evita o panic de escrita concorrente no WebSocket.
+	p.writeMux.Lock()
+	defer p.writeMux.Unlock()
 
 	// Envia para cliente específico da instância
-	if client, exists := p.clients[instanceID]; exists {
-		err := client.WriteJSON(message)
-		if err != nil {
+	if exists {
+		if err := client.WriteJSON(message); err != nil {
 			p.loggerWrapper.GetLogger(instanceID).LogError("Erro ao enviar mensagem websocket para %s: %v", instanceID, err)
-			// Não remove o cliente aqui pois estamos com o RLock
 			return err
 		}
 		p.loggerWrapper.GetLogger(instanceID).LogInfo("Mensagem websocket enviada com sucesso para instância %s na fila %s", instanceID, queueName)
 	}
 
 	// Envia para todos os clientes broadcast
-	for _, conn := range p.broadcast {
-		err := conn.WriteJSON(message)
-		if err != nil {
+	for _, conn := range broadcast {
+		if err := conn.WriteJSON(message); err != nil {
 			p.loggerWrapper.GetLogger(instanceID).LogError("Erro ao enviar mensagem broadcast websocket: %v", err)
 			continue
 		}
